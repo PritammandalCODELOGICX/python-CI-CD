@@ -1,0 +1,86 @@
+name: Python Multi-Stage CI/CD
+
+on:
+  push:
+    branches:
+      - main   # 👈 trigger
+
+jobs:
+
+  # 🔹 BUILD JOB
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Generate tag
+      id: tag
+      run: echo "tag=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+    - name: Build Docker image
+      run: docker build -t python-app:${{ steps.tag.outputs.tag }} .
+
+    - name: Save image
+      run: docker save python-app:${{ steps.tag.outputs.tag }} > app.tar
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: image
+        path: app.tar
+
+  # 🔹 STAGING DEPLOY
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+    - name: Download image
+      uses: actions/download-artifact@v4
+      with:
+        name: image
+
+    - name: Deploy to Staging EC2
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host: ${{ secrets.STAGING_EC2_HOST }}
+        username: ${{ secrets.STAGING_EC2_USER }}
+        key: ${{ secrets.STAGING_EC2_KEY }}
+        script: |
+          docker load < app.tar
+
+          docker stop app || true
+          docker rm app || true
+
+          docker run -d -p 5000:5000 --name app python-app:${{ needs.build.outputs.tag }}
+
+  # 🔹 PRODUCTION DEPLOY
+  deploy-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+    - name: Download image
+      uses: actions/download-artifact@v4
+      with:
+        name: image
+
+    - name: Deploy to Production EC2
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host: ${{ secrets.PROD_EC2_HOST }}
+        username: ${{ secrets.PROD_EC2_USER }}
+        key: ${{ secrets.PROD_EC2_KEY }}
+        script: |
+          docker load < app.tar
+
+          docker stop app || true
+          docker rm app || true
+
+          docker run -d -p 5000:5000 --name app python-app:${{ needs.build.outputs.tag }}
